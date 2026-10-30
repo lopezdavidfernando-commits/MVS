@@ -27,6 +27,9 @@ body{background:var(--night);color:var(--bone);font-family:Rubik,system-ui,-appl
 #hud .score{font-size:20px;color:var(--pumpkin-hi)}
 #lives{display:flex;gap:4px}
 #lives img{width:18px;height:18px}
+.hud-r{display:flex;align-items:center;gap:10px}
+#snd{background:none;border:none;color:var(--muted);padding:2px;display:flex;cursor:pointer}
+#snd svg{width:20px;height:20px}
 #stage{position:relative}
 canvas{display:block}
 #pad{display:grid;grid-template-columns:repeat(3,62px);grid-template-rows:repeat(2,52px);gap:6px;margin-top:4px}
@@ -67,7 +70,7 @@ h1{font-family:Creepster,"Rubik",cursive;font-weight:400;font-size:clamp(46px,14
 </head>
 <body>
 <div id="app">
-  <div id="hud"><span class="score" id="score">0</span><span id="lvl">Nivel 1</span><span id="lives"></span></div>
+  <div id="hud"><span class="score" id="score">0</span><span id="lvl">Nivel 1</span><span class="hud-r"><span id="lives"></span><button id="snd"></button></span></div>
   <div id="stage"><canvas id="c"></canvas><div id="toast"></div></div>
   <div id="pad">
     <button class="up" data-d="up" aria-label="Arriba">▲</button>
@@ -162,7 +165,7 @@ function resetActors(){
   ghosts.forEach(g=>{g.fr=false;g.home=g.x});
   frightT=0;modeT=0;mode='scatter';elapsed=0;
 }
-function startGame(){score=0;level=1;lives=3;resetDots();resetActors();state='ready';pauseT=1.6;toast('¡Listos!',1.6);updHud()}
+function startGame(){audioInit();score=0;level=1;lives=3;resetDots();resetActors();state='ready';pauseT=1.6;toast('¡Listos!',1.6);updHud();sfx('start')}
 function updHud(){
   document.getElementById('score').textContent=score;
   document.getElementById('lvl').textContent='Nivel '+level;
@@ -202,10 +205,10 @@ function eat(x,y){
   if(y<0||y>=ROWS||x<0||x>=COLS)return;
   const v=dots[y][x];if(!v)return;
   dots[y][x]=0;dotsLeft--;
-  if(v===1)score+=10;
-  else{score+=50;toast('¡Despegue!',0.8);frightT=frightDur();eatChain=0;ghosts.forEach(g=>{if(g.st==='active'){g.fr=true;g.dx=-g.dx;g.dy=-g.dy}})}
+  if(v===1){score+=10;sfx('chomp')}
+  else{score+=50;sfx('power');toast('¡Despegue!',0.8);frightT=frightDur();eatChain=0;ghosts.forEach(g=>{if(g.st==='active'){g.fr=true;g.dx=-g.dx;g.dy=-g.dy}})}
   updHud();
-  if(dotsLeft<=0){state='clear';pauseT=2;flashT=2;toast('¡Nivel superado!',2)}
+  if(dotsLeft<=0){state='clear';pauseT=2;sfx('clear');flashT=2;toast('¡Nivel superado!',2)}
 }
 function ghostTarget(g){
   const p=player;
@@ -253,8 +256,8 @@ function update(dt){
   for(const g of ghosts){
     if(g.st!=='active')continue;
     if(Math.abs(g.x-player.x)+Math.abs(g.y-player.y)<0.75){
-      if(g.fr){g.fr=false;g.st='eyes';eatChain++;const pts=200*2**(eatChain-1);score+=pts;updHud();toast('+'+pts,0.8)}
-      else{lives--;updHud();state='dying';pauseT=1.4;player.anim=0;if(navigator.vibrate)try{navigator.vibrate(200)}catch(e){};return}
+      if(g.fr){g.fr=false;g.st='eyes';eatChain++;const pts=200*2**(eatChain-1);score+=pts;updHud();toast('+'+pts,0.8);sfx('ghost')}
+      else{lives--;updHud();state='dying';pauseT=1.4;player.anim=0;sfx('die');if(navigator.vibrate)try{navigator.vibrate(200)}catch(e){};return}
     }
   }
 }
@@ -352,6 +355,70 @@ function draw(t){
   if(state!=='dying'||player.anim<0.2)ghosts.forEach(g=>drawGhost(g,t));
   drawPlayer(t);
 }
+
+// ---------- audio ----------
+const SND={ctx:null,master:null,on:true,track:null,step:0,next:0,chomp:false};
+try{SND.on=localStorage.getItem('mvs_terror_sound')!=='off'}catch(e){}
+const NOTE=n=>440*2**((n-69)/12);
+// original spooky chiptune, A minor; one entry per eighth note, 0 = rest
+const TRACKS={
+  main:{dur:0.18,vol:0.05,
+    lead:[69,72,76,75,76,72,69,0, 67,71,74,73,74,71,67,0, 65,69,72,71,72,69,65,0, 64,68,71,70,71,68,64,0],
+    bass:[45,0,57,0,45,0,57,0, 43,0,55,0,43,0,55,0, 41,0,53,0,41,0,53,0, 40,0,52,0,40,0,52,0]},
+  fright:{dur:0.1,vol:0.035,lead:[76,71,76,71,77,72,77,72],bass:[40,0,0,0,41,0,0,0]}
+};
+function audioInit(){
+  if(SND.ctx){if(SND.ctx.state!=='running')SND.ctx.resume();return}
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+  SND.ctx=new AC();SND.master=SND.ctx.createGain();SND.master.gain.value=SND.on?0.6:0;SND.master.connect(SND.ctx.destination);
+  setInterval(musicTick,25);
+}
+function tone(midi,t,dur,type,vol,slideTo){
+  const c=SND.ctx,o=c.createOscillator(),g=c.createGain();
+  o.type=type;o.frequency.setValueAtTime(NOTE(midi),t);
+  if(slideTo!=null)o.frequency.exponentialRampToValueAtTime(NOTE(slideTo),t+dur);
+  g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g);g.connect(SND.master);o.start(t);o.stop(t+dur+0.02);
+}
+function musicTick(){
+  const c=SND.ctx;
+  const want=state==='play'?(frightT>0?'fright':'main'):null;
+  if(want!==SND.track){SND.track=want;SND.step=0;SND.next=c.currentTime+0.05}
+  if(!want)return;
+  if(SND.next<c.currentTime-0.2)SND.next=c.currentTime+0.05;
+  const tr=TRACKS[want];
+  while(SND.next<c.currentTime+0.12){
+    const i=SND.step%tr.lead.length;
+    if(tr.lead[i])tone(tr.lead[i],SND.next,tr.dur*0.9,'square',tr.vol);
+    if(tr.bass[i])tone(tr.bass[i],SND.next,tr.dur*1.8,'triangle',0.1);
+    SND.step++;SND.next+=tr.dur;
+  }
+}
+function sfx(k){
+  if(!SND.ctx)return;const t=SND.ctx.currentTime+0.01;
+  if(k==='chomp'){SND.chomp=!SND.chomp;tone(SND.chomp?62:57,t,0.08,'triangle',0.12,SND.chomp?55:62)}
+  else if(k==='power'){tone(55,t,0.3,'square',0.06,79)}
+  else if(k==='ghost'){tone(60,t,0.25,'square',0.07,88)}
+  else if(k==='die'){tone(72,t,1,'sawtooth',0.06,36);tone(60,t+0.15,0.85,'square',0.04,30)}
+  else if(k==='start'){
+    [69,72,76,81,79,76,72,76].forEach((n,i)=>tone(n,t+i*0.13,0.12,'square',0.06));tone(81,t+1.04,0.4,'square',0.06);
+    [45,52,45,52,45].forEach((n,i)=>tone(n,t+i*0.26,0.24,'triangle',0.12));
+  }
+  else if(k==='clear'){[72,76,79,84,79,84].forEach((n,i)=>tone(n,t+i*0.11,0.14,'square',0.06));tone(88,t+0.7,0.5,'square',0.06)}
+}
+const SND_ICON={
+  on:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  off:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6"/><path d="m21 9-5 6"/></svg>'
+};
+const sndBtn=document.getElementById('snd');
+function updSnd(){sndBtn.innerHTML=SND.on?SND_ICON.on:SND_ICON.off;sndBtn.setAttribute('aria-label',SND.on?'Silenciar sonido':'Activar sonido')}
+sndBtn.onclick=()=>{
+  SND.on=!SND.on;audioInit();if(SND.master)SND.master.gain.value=SND.on?0.6:0;
+  try{localStorage.setItem('mvs_terror_sound',SND.on?'on':'off')}catch(e){}
+  updSnd();
+};
+updSnd();
+document.addEventListener('visibilitychange',()=>{if(!SND.ctx)return;if(document.hidden)SND.ctx.suspend();else SND.ctx.resume()});
 
 // ---------- input ----------
 function setDir(d){const[dx,dy]=DIRS[d];player.nx=dx;player.ny=dy;if(dx===-player.dx&&dy===-player.dy&&(dx||dy)){player.dx=dx;player.dy=dy}}
